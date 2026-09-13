@@ -1,0 +1,395 @@
+:root {
+  --color-bg: #f4f6f8;
+  --color-surface: #ffffff;
+  --color-border: #dde2e7;
+  --color-text: #1f2937;
+  --color-text-muted: #6b7280;
+  --color-primary: #2563eb;
+  --color-primary-dark: #1d4ed8;
+  --color-danger: #dc2626;
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --sidebar-width: 220px;
+  --header-height: 56px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+a { color: var(--color-primary); text-decoration: none; }
+
+.app-layout {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: var(--sidebar-width);
+  background: #111827;
+  color: #e5e7eb;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-brand {
+  padding: 16px;
+  font-weight: 700;
+  font-size: 1.05rem;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+
+.sidebar nav { display: flex; flex-direction: column; padding: 8px; gap: 2px; }
+
+.sidebar nav a {
+  color: #cbd5e1;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 0.92rem;
+}
+
+.sidebar nav a:hover { background: rgba(255,255,255,0.08); color: #fff; }
+.sidebar nav a.active { background: var(--color-primary); color: #fff; }
+
+.main-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.header {
+  height: var(--header-height);
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  font-weight: 600;
+}
+
+.content {
+  padding: 20px;
+  flex: 1;
+  overflow-x: auto;
+}
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.page-header h1 { font-size: 1.3rem; margin: 0; }
+
+.toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+thead th {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 2px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+tbody td { padding: 8px 10px; border-bottom: 1px solid var(--color-border); vertical-align: middle; }
+tbody tr:hover { background: #fafbfc; }
+tfoot td { padding: 8px 10px; font-weight: 700; border-top: 2px solid var(--color-border); }
+
+.table-wrap { overflow-x: auto; }
+
+input, select, textarea {
+  font-family: inherit;
+  font-size: 0.9rem;
+  padding: 7px 9px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--color-text);
+  width: 100%;
+}
+
+textarea { resize: vertical; }
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.form-field { display: flex; flex-direction: column; gap: 4px; }
+.form-field label { font-size: 0.82rem; font-weight: 600; color: var(--color-text-muted); }
+.form-field .error { color: var(--color-danger); font-size: 0.78rem; }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-primary { background: var(--color-primary); color: #fff; }
+.btn-primary:hover { background: var(--color-primary-dark); }
+.btn-secondary { background: #fff; border-color: var(--color-border); color: var(--color-text); }
+.btn-secondary:hover { background: #f3f4f6; }
+.btn-danger { background: #fff; border-color: var(--color-danger); color: var(--color-danger); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.link-danger { background: none; border: none; color: var(--color-danger); cursor: pointer; font-size: 0.85rem; padding: 0; }
+.link-plain { background: none; border: none; color: var(--color-primary); cursor: pointer; font-size: 0.85rem; padding: 0; }
+
+.badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  background: #e5e7eb;
+  color: #374151;
+  white-space: nowrap;
+}
+.badge-draft { background: #e5e7eb; color: #374151; }
+.badge-confirmed, .badge-issued { background: #dbeafe; color: #1d4ed8; }
+.badge-partially-received, .badge-partially-invoiced, .badge-partially-paid { background: #fef3c7; color: #92400e; }
+.badge-completed, .badge-paid { background: #dcfce7; color: #166534; }
+.badge-cancelled { background: #fee2e2; color: #991b1b; }
+.badge-unpaid { background: #fee2e2; color: #991b1b; }
+
+.alert { padding: 10px 14px; border-radius: 6px; margin-bottom: 14px; font-size: 0.9rem; }
+.alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+.alert-success { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+
+.searchable-select { position: relative; }
+/* Positioned inline at runtime (see SearchableSelect.jsx) via a portal to <body>,
+   so it escapes clipping by scrollable ancestors like .table-wrap. Only visual
+   styling lives here; position/top/left/width are set dynamically per instance. */
+.searchable-select-options {
+  z-index: 1000;
+  background: #fff;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 2px 0 0;
+  padding: 4px;
+  list-style: none;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.08);
+}
+.searchable-select-options li { padding: 7px 8px; border-radius: 4px; cursor: pointer; font-size: 0.88rem; }
+.searchable-select-options li:hover { background: #f3f4f6; }
+.searchable-select-options li.empty { color: var(--color-text-muted); cursor: default; }
+.searchable-select-options li.empty:hover { background: none; }
+
+.line-items table { min-width: 900px; }
+.line-items input, .line-items select { min-width: 90px; }
+
+.totals-box {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+}
+.totals-box table { width: auto; min-width: 280px; }
+.totals-box td { padding: 4px 10px; }
+.totals-box tr.grand-total td { font-weight: 700; font-size: 1.05rem; border-top: 2px solid var(--color-border); }
+
+.dashboard-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+}
+.dashboard-card .label { color: var(--color-text-muted); font-size: 0.85rem; margin-bottom: 6px; }
+.dashboard-card .value { font-size: 1.5rem; font-weight: 700; }
+
+.filters-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+  margin-bottom: 16px;
+}
+.filters-bar .form-field { min-width: 160px; }
+
+@media print {
+  .sidebar, .header, .no-print { display: none !important; }
+  .main-column, .content { padding: 0; margin: 0; }
+  body { background: #fff; }
+}
+
+/* ============================================================
+   Printable invoice (InvoiceDocument.jsx). Scoped entirely to these
+   classes so it only affects the invoice print/PDF view, never the rest
+   of the application.
+   ============================================================ */
+.invoice-paper {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 0;
+  background: #fff;
+  color: #111;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 0.85rem;
+  border: 1.5px solid #111;
+}
+
+/* Each major zone (header, parties, items, totals, footer) is one bordered
+   section with a divider between them — not a border around every field. */
+.invoice-section {
+  padding: 10px 14px;
+  border-bottom: 1.5px solid #111;
+}
+.invoice-section:last-child {
+  border-bottom: none;
+}
+
+.invoice-two-col {
+  display: flex;
+}
+.invoice-two-col-cell {
+  flex: 1 1 0;
+  padding: 2px 10px;
+}
+.invoice-two-col-cell:first-child {
+  border-right: 1px solid #111;
+}
+.invoice-cell-heading {
+  font-weight: bold;
+  text-decoration: underline;
+  margin-bottom: 4px;
+}
+
+.invoice-items-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+.invoice-items-table th,
+.invoice-items-table td {
+  padding: 5px 6px;
+  border: 1px solid #111;
+}
+.invoice-items-table thead {
+  display: table-header-group; /* repeats the header row on each printed page */
+}
+.invoice-items-table tbody tr {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.invoice-totals-table {
+  width: 320px;
+  border-collapse: collapse;
+}
+.invoice-totals-table td {
+  padding: 3px 6px;
+}
+.invoice-totals-table td:last-child {
+  text-align: right;
+}
+.invoice-totals-grand td {
+  border-top: 1.5px solid #111;
+  font-weight: bold;
+  font-size: 1rem;
+  padding-top: 6px;
+}
+
+.invoice-footer-block {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.invoice-terms-heading {
+  font-weight: bold;
+  text-decoration: underline;
+}
+.invoice-signatory-block {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+@page {
+  size: A4 portrait;
+  margin: 10mm;
+}
+
+@media print {
+  .invoice-paper { border-color: #000; }
+  .invoice-items-table th,
+  .invoice-items-table td { border-color: #000; }
+}
+
+/* ============================================================
+   Sales Report print/PDF. Scoped to these classes so it only affects the
+   Sales Report's printed output — the on-screen report layout is untouched.
+   ============================================================ */
+
+/* Named page: elements with `page: sales-report-page` print on A4 landscape
+   pages, while everything else (e.g. the invoice) keeps using the default
+   @page (A4 portrait) declared above. Named-page support is strongest in
+   Chromium-based browsers; the "Download PDF" button does not depend on
+   this at all — it sets landscape directly via jsPDF, so it is unaffected
+   by browser @page support. */
+@page sales-report-page {
+  size: A4 landscape;
+  margin: 10mm;
+}
+.sales-report-print {
+  page: sales-report-page;
+}
+
+@media print {
+  .sales-report-print { width: 100%; }
+}
+
+/* Hidden on screen, shown only when printing/generating a PDF. */
+.report-print-only { display: none; }
+@media print {
+  .report-print-only { display: block; }
+}
+
+.sales-report-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.sales-report-table thead {
+  display: table-header-group; /* repeats the header row on each printed page */
+}
+.sales-report-table th,
+.sales-report-table td {
+  padding: 5px 8px;
+  border: 1px solid #ccc;
+  white-space: nowrap;
+}
+@media print {
+  .sales-report-table th,
+  .sales-report-table td { border-color: #000; font-size: 0.78rem; }
+  /* Individual rows stay intact; the table itself is intentionally NOT
+     break-inside:avoid so a large report can still flow across pages. */
+  .sales-report-table tbody tr { break-inside: avoid; page-break-inside: avoid; }
+}
+
+@media (max-width: 720px) {
+  .sidebar { position: fixed; left: -220px; transition: left 0.2s; height: 100%; }
+  .sidebar.open { left: 0; z-index: 50; }
+}
