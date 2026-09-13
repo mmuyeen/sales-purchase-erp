@@ -16,7 +16,12 @@ import { ApiError } from './middleware/ApiError.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 const app = express();
-
+app.get('/api/health', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Sales Purchase API is running'
+  });
+});
 app.use(cors());
 app.use(express.json());
 
