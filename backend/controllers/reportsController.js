@@ -47,8 +47,8 @@ function sumTotals(rows) {
 
 export async function salesReport(req, res) {
   const { from, to, customerId, invoiceNumber, status } = req.query;
-  const conditions = [];
-  const params = [];
+  const params = [req.user.id];
+  const conditions = ['si.user_id = $1'];
 
   if (from) { params.push(from); conditions.push(`si.invoice_date >= $${params.length}`); }
   if (to) { params.push(to); conditions.push(`si.invoice_date <= $${params.length}`); }
@@ -56,12 +56,11 @@ export async function salesReport(req, res) {
   if (invoiceNumber) { params.push(`%${invoiceNumber}%`); conditions.push(`si.invoice_number ilike $${params.length}`); }
   if (status) { params.push(status); conditions.push(`si.status = $${params.length}`); }
 
-  const where = conditions.length ? `where ${conditions.join(' and ')}` : '';
   const { rows } = await getPool().query(
     `select si.*, c.customer_name
      from sales_invoices si
      join customers c on c.id = si.customer_id
-     ${where} order by si.invoice_date desc, si.id desc`,
+     where ${conditions.join(' and ')} order by si.invoice_date desc, si.id desc`,
     params
   );
 
@@ -71,8 +70,8 @@ export async function salesReport(req, res) {
 
 export async function purchaseOrderReport(req, res) {
   const { from, to, supplierId, poNumber, status } = req.query;
-  const conditions = [];
-  const params = [];
+  const params = [req.user.id];
+  const conditions = ['po.user_id = $1'];
 
   if (from) { params.push(from); conditions.push(`po.po_date >= $${params.length}`); }
   if (to) { params.push(to); conditions.push(`po.po_date <= $${params.length}`); }
@@ -80,12 +79,11 @@ export async function purchaseOrderReport(req, res) {
   if (poNumber) { params.push(`%${poNumber}%`); conditions.push(`po.po_number ilike $${params.length}`); }
   if (status) { params.push(status); conditions.push(`po.status = $${params.length}`); }
 
-  const where = conditions.length ? `where ${conditions.join(' and ')}` : '';
   const { rows } = await getPool().query(
     `select po.*, s.supplier_name
      from purchase_orders po
      join suppliers s on s.id = po.supplier_id
-     ${where} order by po.po_date desc, po.id desc`,
+     where ${conditions.join(' and ')} order by po.po_date desc, po.id desc`,
     params
   );
 
@@ -111,6 +109,10 @@ export async function purchaseOrderReport(req, res) {
 //                       sales_invoices/customers, so the result is naturally
 //                       one row per invoice containing the selected product,
 //                       with that invoice's payment totals attached once.
+//
+// Tenant scoping: the product lookup below confirms the product belongs to
+// the authenticated user; the final query also filters si.user_id directly
+// as defense in depth, rather than relying solely on that transitive check.
 export async function productSalesPaymentsReport(req, res) {
   const { product_id: productId, from_date: fromDate, to_date: toDate } = req.query;
 
@@ -121,15 +123,15 @@ export async function productSalesPaymentsReport(req, res) {
   const pool = getPool();
 
   const productRes = await pool.query(
-    'select id, product_code, product_name, hsn_code from products where id = $1',
-    [productId]
+    'select id, product_code, product_name, hsn_code from products where id = $1 and user_id = $2',
+    [productId, req.user.id]
   );
   if (!productRes.rows.length) {
     throw new ApiError(404, 'Product not found.');
   }
   const product = productRes.rows[0];
 
-  const params = [productId];
+  const params = [productId, req.user.id];
   const dateConditions = [];
   if (fromDate) { params.push(fromDate); dateConditions.push(`si.invoice_date >= $${params.length}`); }
   if (toDate) { params.push(toDate); dateConditions.push(`si.invoice_date <= $${params.length}`); }
@@ -186,7 +188,7 @@ export async function productSalesPaymentsReport(req, res) {
      join sales_invoices si on si.id = ti.sales_invoice_id
      join customers c on c.id = si.customer_id
      left join invoice_payments ip on ip.sales_invoice_id = si.id
-     where true ${dateWhere}
+     where si.user_id = $2 ${dateWhere}
      order by si.invoice_date desc, si.id desc`,
     params
   );

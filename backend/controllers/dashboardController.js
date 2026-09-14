@@ -2,6 +2,7 @@ import { getPool } from '../db.js';
 
 export async function summary(req, res) {
   const pool = getPool();
+  const userId = req.user.id;
 
   const [
     customers,
@@ -13,24 +14,29 @@ export async function summary(req, res) {
     customerOutstanding,
     supplierOutstanding,
   ] = await Promise.all([
-    pool.query("select count(*)::int as count from customers where is_active = true"),
-    pool.query("select count(*)::int as count from suppliers where is_active = true"),
-    pool.query("select count(*)::int as count from products where is_active = true"),
+    pool.query('select count(*)::int as count from customers where is_active = true and user_id = $1', [userId]),
+    pool.query('select count(*)::int as count from suppliers where is_active = true and user_id = $1', [userId]),
+    pool.query('select count(*)::int as count from products where is_active = true and user_id = $1', [userId]),
     pool.query(
-      "select coalesce(sum(grand_total),0) as total from sales_invoices where invoice_date = current_date and status <> 'Cancelled'"
+      "select coalesce(sum(grand_total),0) as total from sales_invoices where invoice_date = current_date and status <> 'Cancelled' and user_id = $1",
+      [userId]
     ),
     pool.query(
       `select coalesce(sum(grand_total),0) as total from sales_invoices
-       where date_trunc('month', invoice_date) = date_trunc('month', current_date) and status <> 'Cancelled'`
+       where date_trunc('month', invoice_date) = date_trunc('month', current_date) and status <> 'Cancelled' and user_id = $1`,
+      [userId]
     ),
     pool.query(
-      "select count(*)::int as count from purchase_orders where date_trunc('month', po_date) = date_trunc('month', current_date)"
+      "select count(*)::int as count from purchase_orders where date_trunc('month', po_date) = date_trunc('month', current_date) and user_id = $1",
+      [userId]
     ),
     pool.query(
-      "select coalesce(sum(balance_amount),0) as total from sales_invoices where status not in ('Paid','Cancelled')"
+      "select coalesce(sum(balance_amount),0) as total from sales_invoices where status not in ('Paid','Cancelled') and user_id = $1",
+      [userId]
     ),
     pool.query(
-      "select coalesce(sum(balance_amount),0) as total from purchase_orders where payment_status <> 'Paid' and status <> 'Cancelled'"
+      "select coalesce(sum(balance_amount),0) as total from purchase_orders where payment_status <> 'Paid' and status <> 'Cancelled' and user_id = $1",
+      [userId]
     ),
   ]);
 

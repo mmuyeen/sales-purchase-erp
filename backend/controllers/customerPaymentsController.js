@@ -23,19 +23,18 @@ function mapRow(row) {
 
 export async function list(req, res) {
   const { customerId, invoiceId } = req.query;
-  const conditions = [];
-  const params = [];
+  const params = [req.user.id];
+  const conditions = ['cp.user_id = $1'];
 
   if (customerId) { params.push(customerId); conditions.push(`cp.customer_id = $${params.length}`); }
   if (invoiceId) { params.push(invoiceId); conditions.push(`cp.sales_invoice_id = $${params.length}`); }
 
-  const where = conditions.length ? `where ${conditions.join(' and ')}` : '';
   const { rows } = await getPool().query(
     `select cp.*, c.customer_name, si.invoice_number
      from customer_payments cp
      join customers c on c.id = cp.customer_id
      join sales_invoices si on si.id = cp.sales_invoice_id
-     ${where} order by cp.payment_date desc, cp.id desc`,
+     where ${conditions.join(' and ')} order by cp.payment_date desc, cp.id desc`,
     params
   );
   res.json({ success: true, data: rows.map(mapRow) });
@@ -56,9 +55,17 @@ export async function create(req, res) {
   }
 
   const result = await withTransaction(async (client) => {
+    // Tenant-scoped: also confirms the customer belongs to this user, since
+    // a cross-tenant invoice simply won't be found.
+    const { rows: customerRows } = await client.query(
+      'select id from customers where id = $1 and user_id = $2',
+      [customerId, req.user.id]
+    );
+    if (!customerRows.length) throw new ApiError(400, 'Please select a valid customer.');
+
     const { rows: invoiceRows } = await client.query(
-      'select * from sales_invoices where id = $1 for update',
-      [salesInvoiceId]
+      'select * from sales_invoices where id = $1 and user_id = $2 for update',
+      [salesInvoiceId, req.user.id]
     );
     if (!invoiceRows.length) throw new ApiError(404, 'Invoice not found.');
     const invoice = invoiceRows[0];
@@ -73,12 +80,12 @@ export async function create(req, res) {
       throw new ApiError(400, 'Payment amount exceeds outstanding balance.');
     }
 
-    const paymentNumber = await generateNumber(client, 'CP', { yearly: true });
+    const paymentNumber = await generateNumber(client, req.user.id, 'CP', { yearly: true });
     const { rows: paymentRows } = await client.query(
       `insert into customer_payments
-        (payment_number, payment_date, customer_id, sales_invoice_id, amount, payment_mode, reference_number, remarks)
-       values ($1,$2,$3,$4,$5,$6,$7,$8) returning *`,
-      [paymentNumber, paymentDate, customerId, salesInvoiceId, amountNum, paymentMode, referenceNumber || null, remarks || null]
+        (payment_number, payment_date, customer_id, sales_invoice_id, amount, payment_mode, reference_number, remarks, user_id)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9) returning *`,
+      [paymentNumber, paymentDate, customerId, salesInvoiceId, amountNum, paymentMode, referenceNumber || null, remarks || null, req.user.id]
     );
 
     const newPaid = round2(Number(invoice.paid_amount) + amountNum);

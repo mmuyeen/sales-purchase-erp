@@ -4,7 +4,7 @@ import { validateInvoiceInput } from '../validators/invoices.js';
 import { generateNumber } from '../services/numbering.js';
 import { computeDocumentTotals } from '../services/calculations.js';
 import { resolveStateCode, determineGstType } from '../../shared/gst.js';
-import { resolveCompanyStateCode } from './companyController.js';
+import { getCompanyForUser } from './companyController.js';
 import { INVOICE_STATUS_OPTIONS } from '../../shared/constants.js';
 
 function mapHeader(row) {
@@ -72,8 +72,8 @@ const HEADER_SELECT = `
 
 export async function list(req, res) {
   const { customerId, status, from, to, invoiceNumber } = req.query;
-  const conditions = [];
-  const params = [];
+  const params = [req.user.id];
+  const conditions = ['si.user_id = $1'];
 
   if (customerId) { params.push(customerId); conditions.push(`si.customer_id = $${params.length}`); }
   if (status) { params.push(status); conditions.push(`si.status = $${params.length}`); }
@@ -81,9 +81,8 @@ export async function list(req, res) {
   if (to) { params.push(to); conditions.push(`si.invoice_date <= $${params.length}`); }
   if (invoiceNumber) { params.push(`%${invoiceNumber}%`); conditions.push(`si.invoice_number ilike $${params.length}`); }
 
-  const where = conditions.length ? `where ${conditions.join(' and ')}` : '';
   const { rows } = await getPool().query(
-    `${HEADER_SELECT} ${where} order by si.invoice_date desc, si.id desc`,
+    `${HEADER_SELECT} where ${conditions.join(' and ')} order by si.invoice_date desc, si.id desc`,
     params
   );
   res.json({ success: true, data: rows.map(mapHeader) });
@@ -91,7 +90,7 @@ export async function list(req, res) {
 
 export async function getById(req, res) {
   const pool = getPool();
-  const { rows } = await pool.query(`${HEADER_SELECT} where si.id = $1`, [req.params.id]);
+  const { rows } = await pool.query(`${HEADER_SELECT} where si.id = $1 and si.user_id = $2`, [req.params.id, req.user.id]);
   if (!rows.length) throw new ApiError(404, 'Invoice not found.');
 
   const { rows: items } = await pool.query(
@@ -118,20 +117,23 @@ async function insertItems(client, invoiceId, computedItems) {
   }
 }
 
-// Same direction as a Sales Order: OUR COMPANY is the GST seller, the
-// CUSTOMER is the buyer. Computed fresh at invoice-creation time from
-// whichever customer/company state applies then, and never recalculated
-// again afterward — the stored amounts are the permanent historical record,
-// exactly like the existing customer_gst_number/customer_state snapshots.
-function resolveGstTypeForCustomer(customer) {
+async function assertProductsOwnedByUser(client, items, userId) {
+  const productIds = [...new Set(items.map((item) => String(item.productId)))];
+  const { rows } = await client.query(
+    'select id from products where id = any($1::bigint[]) and user_id = $2',
+    [productIds, userId]
+  );
+  if (rows.length !== productIds.length) {
+    throw new ApiError(400, 'One or more products are invalid.');
+  }
+}
+
+async function resolveGstTypeForCustomer(client, customer, userId) {
+  const company = await getCompanyForUser(client, userId);
   const customerStateCode = resolveStateCode({ gstNumber: customer.gst_number, state: customer.state });
-  const companyStateCode = resolveCompanyStateCode();
-  const gstType = determineGstType(companyStateCode, customerStateCode);
+  const gstType = determineGstType(company.company_state_code, customerStateCode);
   if (!gstType) {
-    throw new ApiError(
-      400,
-      'Cannot determine GST type. Please configure COMPANY_STATE_CODE (or COMPANY_GST_NUMBER / COMPANY_STATE) in the environment, and ensure the customer has a valid state or GST number.'
-    );
+    throw new ApiError(400, 'Cannot determine GST type. The customer has no usable state or GST information.');
   }
   return gstType;
 }
@@ -141,35 +143,40 @@ export async function create(req, res) {
 
   const header = await withTransaction(async (client) => {
     const { rows: customerRows } = await client.query(
-      'select * from customers where id = $1 and is_active = true',
-      [input.customerId]
+      'select * from customers where id = $1 and user_id = $2 and is_active = true',
+      [input.customerId, req.user.id]
     );
     if (!customerRows.length) throw new ApiError(400, 'Please select a valid active customer.');
     const customer = customerRows[0];
 
-    const gstType = resolveGstTypeForCustomer(customer);
+    await assertProductsOwnedByUser(client, input.items, req.user.id);
+
+    const gstType = await resolveGstTypeForCustomer(client, customer, req.user.id);
     const { computedItems, subtotal, discountAmount, taxableAmount, cgstAmount, sgstAmount, igstAmount, totalGst, roundOff, grandTotal } =
       computeDocumentTotals(input.items, gstType);
 
     let soNumber = null;
     if (input.salesOrderId) {
-      const { rows: soRows } = await client.query('select so_number from sales_orders where id = $1', [input.salesOrderId]);
+      const { rows: soRows } = await client.query(
+        'select so_number from sales_orders where id = $1 and user_id = $2',
+        [input.salesOrderId, req.user.id]
+      );
       if (!soRows.length) throw new ApiError(400, 'Referenced sales order not found.');
       soNumber = soRows[0].so_number;
     }
 
-    const invoiceNumber = await generateNumber(client, 'INV', { yearly: true });
+    const invoiceNumber = await generateNumber(client, req.user.id, 'INV', { yearly: true });
 
     const { rows } = await client.query(
       `insert into sales_invoices
         (invoice_number, invoice_date, customer_id, sales_order_id, customer_address, customer_gst_number, customer_state,
          payment_terms, remarks, subtotal, discount_amount, taxable_amount, cgst_amount, sgst_amount, igst_amount, total_gst,
-         round_off, tax_amount, grand_total, balance_amount)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$16,$18,$18)
+         round_off, tax_amount, grand_total, balance_amount, user_id)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$16,$18,$18,$19)
        returning *`,
       [invoiceNumber, input.invoiceDate, input.customerId, input.salesOrderId, customer.address, customer.gst_number, customer.state,
         input.paymentTerms, input.remarks, subtotal, discountAmount, taxableAmount,
-        cgstAmount, sgstAmount, igstAmount, totalGst, roundOff, grandTotal]
+        cgstAmount, sgstAmount, igstAmount, totalGst, roundOff, grandTotal, req.user.id]
     );
     const invoice = rows[0];
 
@@ -186,8 +193,8 @@ export async function update(req, res) {
 
   const header = await withTransaction(async (client) => {
     const { rows: existingRows } = await client.query(
-      'select * from sales_invoices where id = $1 for update',
-      [req.params.id]
+      'select * from sales_invoices where id = $1 and user_id = $2 for update',
+      [req.params.id, req.user.id]
     );
     if (!existingRows.length) throw new ApiError(404, 'Invoice not found.');
     const existing = existingRows[0];
@@ -196,19 +203,24 @@ export async function update(req, res) {
     }
 
     const { rows: customerRows } = await client.query(
-      'select * from customers where id = $1 and is_active = true',
-      [input.customerId]
+      'select * from customers where id = $1 and user_id = $2 and is_active = true',
+      [input.customerId, req.user.id]
     );
     if (!customerRows.length) throw new ApiError(400, 'Please select a valid active customer.');
     const customer = customerRows[0];
 
-    const gstType = resolveGstTypeForCustomer(customer);
+    await assertProductsOwnedByUser(client, input.items, req.user.id);
+
+    const gstType = await resolveGstTypeForCustomer(client, customer, req.user.id);
     const { computedItems, subtotal, discountAmount, taxableAmount, cgstAmount, sgstAmount, igstAmount, totalGst, roundOff, grandTotal } =
       computeDocumentTotals(input.items, gstType);
 
     let soNumber = null;
     if (input.salesOrderId) {
-      const { rows: soRows } = await client.query('select so_number from sales_orders where id = $1', [input.salesOrderId]);
+      const { rows: soRows } = await client.query(
+        'select so_number from sales_orders where id = $1 and user_id = $2',
+        [input.salesOrderId, req.user.id]
+      );
       if (!soRows.length) throw new ApiError(400, 'Referenced sales order not found.');
       soNumber = soRows[0].so_number;
     }
@@ -219,10 +231,10 @@ export async function update(req, res) {
          payment_terms=$7, remarks=$8, subtotal=$9, discount_amount=$10, taxable_amount=$11,
          cgst_amount=$12, sgst_amount=$13, igst_amount=$14, total_gst=$15, round_off=$16, tax_amount=$15,
          grand_total=$17, balance_amount=$17
-       where id=$18 returning *`,
+       where id=$18 and user_id=$19 returning *`,
       [input.invoiceDate, input.customerId, input.salesOrderId, customer.address, customer.gst_number, customer.state,
         input.paymentTerms, input.remarks, subtotal, discountAmount, taxableAmount,
-        cgstAmount, sgstAmount, igstAmount, totalGst, roundOff, grandTotal, req.params.id]
+        cgstAmount, sgstAmount, igstAmount, totalGst, roundOff, grandTotal, req.params.id, req.user.id]
     );
 
     await client.query('delete from sales_invoice_items where sales_invoice_id = $1', [req.params.id]);
@@ -242,8 +254,8 @@ export async function updateStatus(req, res) {
 
   const header = await withTransaction(async (client) => {
     const { rows: existingRows } = await client.query(
-      'select * from sales_invoices where id = $1 for update',
-      [req.params.id]
+      'select * from sales_invoices where id = $1 and user_id = $2 for update',
+      [req.params.id, req.user.id]
     );
     if (!existingRows.length) throw new ApiError(404, 'Invoice not found.');
     const existing = existingRows[0];
@@ -259,8 +271,8 @@ export async function updateStatus(req, res) {
     }
 
     const { rows } = await client.query(
-      'update sales_invoices set status = $1 where id = $2 returning *',
-      [status, req.params.id]
+      'update sales_invoices set status = $1 where id = $2 and user_id = $3 returning *',
+      [status, req.params.id, req.user.id]
     );
     const { rows: customerRows } = await client.query(
       'select customer_name from customers where id = $1',
@@ -275,7 +287,10 @@ export async function updateStatus(req, res) {
 
 export async function remove(req, res) {
   await withTransaction(async (client) => {
-    const { rows } = await client.query('select * from sales_invoices where id = $1 for update', [req.params.id]);
+    const { rows } = await client.query(
+      'select * from sales_invoices where id = $1 and user_id = $2 for update',
+      [req.params.id, req.user.id]
+    );
     if (!rows.length) throw new ApiError(404, 'Invoice not found.');
     const invoice = rows[0];
     if (invoice.status !== 'Draft' || Number(invoice.paid_amount) > 0) {

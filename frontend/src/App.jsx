@@ -1,5 +1,10 @@
 import { Route, Routes } from 'react-router-dom';
 import MainLayout from './layouts/MainLayout.jsx';
+import { ProtectedRoute, PublicOnlyRoute } from './components/RouteGuards.jsx';
+
+import Login from './pages/auth/Login.jsx';
+import Register from './pages/auth/Register.jsx';
+import CompanySettings from './pages/settings/CompanySettings.jsx';
 
 import Dashboard from './pages/Dashboard.jsx';
 
@@ -38,9 +43,12 @@ import ProductSalesPaymentReport from './pages/reports/ProductSalesPaymentReport
 export default function App() {
   return (
     <Routes>
-      <Route path="/invoices/:id/print" element={<InvoicePrint />} />
+      <Route path="/login" element={<PublicOnlyRoute><Login /></PublicOnlyRoute>} />
+      <Route path="/register" element={<PublicOnlyRoute><Register /></PublicOnlyRoute>} />
 
-      <Route element={<MainLayout />}>
+      <Route path="/invoices/:id/print" element={<ProtectedRoute><InvoicePrint /></ProtectedRoute>} />
+
+      <Route element={<ProtectedRoute><MainLayout /></ProtectedRoute>}>
         <Route path="/" element={<Dashboard />} />
 
         <Route path="/customers" element={<CustomerList />} />
@@ -76,6 +84,8 @@ export default function App() {
         <Route path="/reports/sales" element={<SalesReport />} />
         <Route path="/reports/purchase-orders" element={<PurchaseReport />} />
         <Route path="/reports/product-sales-payments" element={<ProductSalesPaymentReport />} />
+
+        <Route path="/settings/company" element={<CompanySettings />} />
       </Route>
     </Routes>
   );

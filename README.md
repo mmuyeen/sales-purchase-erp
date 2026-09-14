@@ -1,185 +1,233 @@
 # Sales & Purchase Management
 
-A simple, practical Sales and Purchase Management application for a small business: Customer, Supplier and
-Product masters; Purchase Orders; Sales Orders; Sales Invoices with printable output; Customer and Supplier
-payments; and Sales/Purchase reports. Deliberately kept lean — no inventory, no accounting ledger, no GST
-engine, no multi-company/multi-currency support.
+A multi-tenant Sales and Purchase Management application. Each vendor/company registers its own
+account and sees only its own customers, suppliers, products, orders, invoices, and payments — no
+vendor can ever see or modify another vendor's data.
 
 ## 1. Architecture
 
 ```
 React (Vite) frontend  ──►  Express API (single serverless function on Vercel)  ──►  PostgreSQL on Supabase
+                              │
+                              ├─ httpOnly-cookie JWT auth (stateless — safe for serverless)
+                              └─ every business query filtered by the authenticated user's id
 ```
 
-- **Frontend**: React + Vite, plain CSS, React Router. Talks to the backend only via `/api/*`.
-- **Backend**: Express app (`backend/`), exposed to Vercel as one serverless function (`api/index.js`). Uses
-  `pg` (node-postgres) directly — no Supabase client SDK, no PostgREST.
-- **Database**: PostgreSQL hosted on Supabase. Migrations are plain `.sql` files in `database/migrations/`.
-- **Hard-coded configuration** (by design — no database master tables for these): UOM, Tax rates, Payment
-  Terms, Payment Modes, Indian States. All defined in `shared/constants.js`, imported by both frontend and
-  backend so there is one source of truth.
+- **Frontend**: React + Vite, plain CSS, React Router. Auth state lives in `AuthContext`
+  (`frontend/src/context/AuthContext.jsx`), restored on load via `GET /api/auth/me`.
+- **Backend**: Express app (`backend/`), one serverless function on Vercel (`api/index.js`). Uses `pg`
+  directly — no ORM, no ODBC-style abstraction.
+- **Database**: PostgreSQL on Supabase. Migrations are plain `.sql` files in `database/migrations/`, run
+  in numeric order.
 
-## 2. Technology Stack
+## 2. Authentication
+
+- Email + password, hashed with **bcryptjs** (never stored or returned in plaintext).
+- On login/register, the backend issues a JWT (`{ sub: userId }` only — no company or business data in the
+  token) signed with `JWT_SECRET`, and sets it as an **httpOnly cookie** (`spm_token`). It is never stored
+  in `localStorage`/`sessionStorage` or any JS-readable place.
+- `backend/middleware/auth.js`'s `requireAuth` verifies that cookie on every protected request and attaches
+  `req.user = { id }` — every controller trusts **only** this, never a client-supplied `user_id`.
+- Because the token is self-contained (stateless JWT, no server-side session store), this works correctly
+  across Vercel's independent serverless instances with no shared memory required.
+- Login/registration endpoints have a basic in-memory rate limit (`backend/middleware/rateLimit.js`) as a
+  deterrent against brute force. **Limitation**: this is per-process memory, so it resets across cold
+  starts and isn't shared across concurrent serverless instances — a real production deployment under
+  sustained attack would want a shared store (e.g. Redis) instead.
+
+## 3. Multi-Tenancy
+
+- Every business table (`customers`, `suppliers`, `products`, `purchase_orders`, `sales_orders`,
+  `sales_invoices`, `customer_payments`, `supplier_payments`) has a `user_id` column. Line-item tables
+  (`*_items`) do **not** duplicate it — ownership is inherited through their parent row.
+- **Every** `SELECT`/`UPDATE`/`DELETE` is filtered by `WHERE ... AND user_id = $authenticatedUserId`.
+  Fetching another tenant's record by ID returns a generic `404`, never a `403` that would confirm the
+  record exists.
+- **Every foreign key supplied by the client is re-validated for ownership before use** — e.g. creating an
+  invoice re-checks that the `customerId` and every line's `productId` actually belong to the authenticated
+  user, not just that they exist. Without this, a vendor who merely *knew* another vendor's numeric ID
+  could reference their data; existence alone was never sufficient.
+- **Company information** lives in the `companies` table (one row per user, enforced by
+  `UNIQUE(user_id)`) — never in environment variables. Invoice/order GST calculation always loads the
+  authenticated user's own company row for the seller side of the CGST/SGST/IGST determination.
+- **Business numbering** (`CUS-000001`, `INV-2026-000001`, ...) is scoped per tenant — the underlying
+  `number_sequences` key is `"<user_id>:<prefix>"`, so two vendors independently start at 1. The
+  corresponding uniqueness constraints on `customer_code`/`invoice_number`/etc. are `UNIQUE(user_id, code)`,
+  not globally unique, so this is legitimate and expected.
+
+## 4. Registration
+
+`POST /api/auth/register` collects both account fields (email, password, confirm password) and company
+fields (name, address, GST number, state, state code) in one call, and creates the `users` row and the
+`companies` row in a **single database transaction** — if anything fails, neither row is left behind.
+On success, the user is immediately logged in (cookie set) and redirected to the dashboard.
+
+## 5. Database Schema (multi-tenancy additions)
+
+```sql
+users        (id UUID PK, email UNIQUE, password_hash, is_active, timestamps)
+companies    (id UUID PK, user_id UUID UNIQUE → users.id, company_name, company_address,
+              company_gst_number, company_state, company_state_code, timestamps)
+
+-- existing business tables gained:
+customers.user_id, suppliers.user_id, products.user_id, purchase_orders.user_id,
+sales_orders.user_id, sales_invoices.user_id, customer_payments.user_id, supplier_payments.user_id
+  (all UUID, NOT NULL, references users(id), indexed; several also have a composite
+   (user_id, <date column>) index matching real report/list query patterns)
+```
+
+See `database/migrations/012_users_and_companies.sql`, `013_tenant_isolation.sql`, and
+`014_scope_business_numbers_by_tenant.sql` for the exact DDL.
+
+## 6. Technology Stack
 
 - React 18, Vite, React Router, Axios
-- Node.js, Express, `pg`
+- Node.js, Express, `pg`, `bcryptjs`, `jsonwebtoken`, `cookie-parser`
 - PostgreSQL (Supabase)
 - Vercel (serverless functions + static hosting)
 
-## 3. Project Structure
+## 7. Project Structure
 
 ```
-frontend/          React app (Vite)
-api/index.js        Vercel serverless entry (wraps the Express app)
-backend/             Express app, routes, controllers, validators, db access
-shared/constants.js  Hard-coded UOM/Tax/Payment Terms/Payment Modes/Indian States
+frontend/            React app (Vite) — includes pages/auth (Login/Register), pages/settings (Company)
+api/index.js         Vercel serverless entry (wraps the Express app)
+backend/             Express app, routes, controllers, validators, auth middleware, db access
+shared/              Hard-coded UOM/Tax/Payment Terms/Payment Modes/Indian States/GST helpers
 database/migrations  Numbered SQL migration files, run in order
 vercel.json          Build + routing config for Vercel
 .env.example         Environment variable template (no real secrets)
 ```
 
-## 4. Prerequisites
+## 8. Prerequisites
 
-- Node.js 18 or later
-- npm
-- A Supabase account (free tier is enough) — https://supabase.com
-- Git and a GitHub account (for source control / Vercel deploy)
+- Node.js 18+, npm
+- A Supabase account — https://supabase.com
+- Git and GitHub (for source control / Vercel deploy)
 
-## 5. Supabase Setup
+## 9. Supabase Setup
 
-1. Create a new project at https://supabase.com/dashboard.
-2. Once it's provisioned, go to **Project Settings → Database → Connection string**.
-3. Choose the **Connection pooling** tab (not "Direct connection") and copy the **URI** — it should use
-   port `6543` and look like:
-   ```
-   postgresql://postgres.xxxxxxxx:[YOUR-PASSWORD]@aws-0-<region>.pooler.supabase.com:6543/postgres
-   ```
-   Using the pooled (transaction mode) connection is important — the backend runs as short-lived serverless
-   functions on Vercel and a small pooled connection avoids exhausting Postgres' connection limit.
-4. Replace `[YOUR-PASSWORD]` with your actual database password (set when the project was created, or reset
-   it from the same page).
+Unchanged from before: create a project at https://supabase.com/dashboard, then use the **Connection
+pooling** (transaction mode, port 6543) URI from Project Settings → Database → Connection string as your
+`DATABASE_URL`.
 
-## 6. Database Migration
+## 10. Database Migration
 
-Run the migration files **in order** against your Supabase database. From the `database/migrations/`
-directory, using `psql`:
+Run every file in `database/migrations/` **in order** (001 through 014) against your Supabase database —
+via `psql "<connection string>" -f database/migrations/00X_....sql` for each, or by pasting each file's
+contents into the Supabase SQL Editor in order. All 14 have been verified to apply cleanly, in order,
+against a live PostgreSQL instance.
 
-```bash
-psql "<your Supabase connection string>" -f database/migrations/001_functions.sql
-psql "<your Supabase connection string>" -f database/migrations/002_number_sequences.sql
-psql "<your Supabase connection string>" -f database/migrations/003_customers.sql
-psql "<your Supabase connection string>" -f database/migrations/004_suppliers.sql
-psql "<your Supabase connection string>" -f database/migrations/005_products.sql
-psql "<your Supabase connection string>" -f database/migrations/006_purchase_orders.sql
-psql "<your Supabase connection string>" -f database/migrations/007_sales_orders.sql
-psql "<your Supabase connection string>" -f database/migrations/008_sales_invoices.sql
-psql "<your Supabase connection string>" -f database/migrations/009_payments.sql
-```
+### Existing-data migration strategy (read this if you already have data)
 
-Or, simplest: open the Supabase Dashboard → **SQL Editor**, and paste/run each file's contents in order
-(001 through 009). Each has been verified to apply cleanly, in order, against a real PostgreSQL instance.
+If you are migrating a database that already has customers/suppliers/products/orders/invoices/payments
+from **before** multi-tenancy existed, migration `013_tenant_isolation.sql` handles this automatically and
+safely:
 
-There is no seed data — the app starts with empty masters, which you populate through the UI.
+1. It adds a nullable `user_id` column to every business table (no data touched yet).
+2. If the `users` table is currently empty, it creates exactly **one bootstrap owner account**, using
+   `pgcrypto`'s `crypt()`/`gen_salt('bf')` to generate a real bcrypt password hash **directly in SQL** — no
+   password is ever hardcoded anywhere. The password is a fresh random value, printed **once**, via a
+   PostgreSQL `NOTICE`, when the migration runs. If you ran this migration yourself, check your migration
+   tool/psql output for a block starting `=== BOOTSTRAP OWNER CREATED ===`; capture it immediately, log in,
+   and treat it as sensitive.
+3. That bootstrap account's `companies` row is seeded with whatever company info previously lived in
+   `.env` (if you're running this exact repo's history, that's `M.R ENTERPRISES` / `33CAIPR3152A1Z4` /
+   Tamil Nadu / `33`) — this is business-public information (the same thing printed on that vendor's own
+   invoices), not a secret, and is the correct place for it to live going forward.
+4. Every pre-existing row in every business table is assigned to that bootstrap owner (`UPDATE ... SET
+   user_id = <owner> WHERE user_id IS NULL`) — **nothing is deleted**.
+5. Only once every row has an owner does the migration add the `NOT NULL` constraint.
+6. The whole migration is idempotent: if `users` already has rows (e.g. you run it a second time by
+   mistake), step 2–4 are skipped entirely with a `NOTICE` rather than creating a duplicate owner or
+   re-touching already-owned data.
 
-## 7. Local Environment Configuration
+If you need to identify which rows belonged to the pre-multi-tenant data afterward, they're simply every
+row owned by that one bootstrap account — query `select * from users where email = 'owner@mrenterprises.local'`
+to find its id.
 
-Copy the example file and fill in your own values:
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env`:
+## 11. Environment Variables
 
 ```
-DATABASE_URL=<your Supabase pooled connection string from step 5>
-PORT=4000
-COMPANY_NAME=<your company name>
-COMPANY_ADDRESS=<your company address>
-COMPANY_GST_NUMBER=<your company GST number>
+DATABASE_URL=     # Supabase pooled Postgres connection string (port 6543) — required
+JWT_SECRET=       # long random string used to sign auth tokens — required, generate with e.g. `openssl rand -base64 48`
+PORT=4000         # local dev API port only; unused on Vercel
 ```
 
-`COMPANY_NAME` / `COMPANY_ADDRESS` / `COMPANY_GST_NUMBER` appear on the printable invoice header. Never
-commit `.env` — it's already in `.gitignore`.
+**`COMPANY_NAME` / `COMPANY_ADDRESS` / `COMPANY_GST_NUMBER` / `COMPANY_STATE` / `COMPANY_STATE_CODE` no
+longer exist and are not read by any runtime code.** Company information is per-tenant, stored in the
+`companies` table, and managed from the Company Settings screen after login.
 
-## 8. Running Locally
+## 12. Local Development
 
 ```bash
 npm install
+cp .env.example .env    # then fill in DATABASE_URL and JWT_SECRET
 npm run dev
 ```
 
-This starts:
-- the Express API on `http://localhost:4000` (reading `DATABASE_URL` from `.env`)
-- the Vite dev server on `http://localhost:5173`, which proxies `/api/*` requests to the API above
+Starts the Express API on `http://localhost:4000` and the Vite dev server on `http://localhost:5173`
+(proxying `/api/*`, cookies flow through the proxy correctly since the browser sees one origin). Open
+`http://localhost:5173`, register an account, and you're in.
 
-Open `http://localhost:5173` in your browser.
-
-Run them separately if you prefer:
-```bash
-npm run dev:api          # API only, port 4000
-npm run dev:frontend     # Vite only, port 5173
-```
-
-## 9. Build
+## 13. Build
 
 ```bash
 npm run build
 ```
 
-Builds the frontend to `frontend/dist`. (The backend needs no build step — it runs directly as Node/ESM.)
+Builds the frontend to `frontend/dist`. No build step is needed for the backend.
 
-## 10. GitHub Setup
+## 14. GitHub / Vercel Deployment
 
-```bash
-git init                      # if not already a repo
-git add .
-git commit -m "Initial commit: Sales & Purchase Management application"
-git branch -M main
-git remote add origin <your GitHub repository URL>
-git push -u origin main
+Same as before: push to GitHub, import into Vercel, keep the repo root as the Vercel project root (so
+`/api` is auto-detected). Set these two environment variables in Vercel Project Settings:
+
+```
+DATABASE_URL
+JWT_SECRET
 ```
 
-Double-check `git status` before your first push — `.env` should **not** appear (it's git-ignored); only
-`.env.example` should be tracked.
+Nothing else is required for normal operation — company information is entirely user-managed at runtime.
 
-## 11. Vercel Deployment
+## 15. Security Notes
 
-1. Go to https://vercel.com and **Import Project** from your GitHub repository.
-2. Vercel will detect `vercel.json` at the repo root — leave the root directory as the repo root (do **not**
-   set it to `frontend/`), since `/api` must stay at the project root for Vercel to detect it as a
-   serverless function.
-3. Under **Project Settings → Environment Variables**, add:
-   - `DATABASE_URL` — your Supabase pooled connection string (same as local `.env`)
-   - `COMPANY_NAME`, `COMPANY_ADDRESS`, `COMPANY_GST_NUMBER` — for the invoice header
-4. Deploy. Vercel runs `npm run build` (per `vercel.json`) and serves `frontend/dist` as static content,
-   with `/api/*` routed to the Express app in `api/index.js`.
-5. After the first deploy, open the site and confirm the Dashboard loads (this proves the API can reach
-   Supabase) before using the app for real data.
+- Passwords: bcrypt-hashed (`bcryptjs`, 10 rounds), never logged, never returned by any API response.
+- Login errors are always the generic *"Invalid email or password."* — the API never reveals whether an
+  email exists. A dummy bcrypt comparison runs even when no user is found, so a missing-vs-wrong-password
+  response takes a comparable amount of time.
+- Every protected route requires a valid session (`requireAuth`); every business query is tenant-filtered
+  at the database level, never left to the frontend.
+- All input is validated server-side regardless of what the frontend already checked; all SQL is
+  parameterized.
+- `.env` is git-ignored; `.env.example` never contains a real secret.
 
-**Never** set `SUPABASE_SERVICE_ROLE_KEY` or any Supabase API key on the frontend — this app doesn't use
-the Supabase client SDK at all, only a direct PostgreSQL connection from the backend, so no such key is
-needed anywhere.
+## 16. Test Tenants (created during implementation/verification)
 
-## 12. Troubleshooting
+Two throwaway vendor accounts were created while verifying tenant isolation for this feature:
 
-- **"DATABASE_URL environment variable is not set"** — `.env` is missing or wasn't loaded; confirm the file
-  exists at the repo root and you're running `npm run dev` from there.
-- **Connection errors / timeouts to Supabase** — confirm you copied the **pooled** connection string (port
-  `6543`), not the direct connection (port `5432`); serverless functions should always use the pooler.
-  Also confirm the project isn't paused (Supabase free-tier projects pause after inactivity — resume it
-  from the dashboard).
-- **Dates look one day off** — shouldn't happen; the backend explicitly parses PostgreSQL `DATE` columns as
-  plain strings (`backend/db.js`) to avoid timezone shifting. If you see this, check any code path that
-  bypasses `getPool()`.
-- **"Payment amount exceeds outstanding balance"** — by design; partial and full payments are allowed but
-  never an overpayment. Check the invoice/PO balance shown in its detail page.
-- **Vercel build succeeds but `/api/*` returns 404** — confirm the Vercel project's root directory is the
-  repository root (not `frontend/`), since `vercel.json` and `/api` must be visible at that root.
+```
+vendor-a@example.com / PasswordA123   (Vendor A Trading Co, Tamil Nadu)
+vendor-b@example.com / PasswordB123   (Vendor B Exports, Karnataka)
+```
 
-## 13. What's Deliberately Not Included
+Each has its own customer/supplier/product/invoice. Feel free to delete both (and their data) once you've
+confirmed isolation yourself, or keep them as a standing demonstration.
 
-Per the project's scope, the following are intentionally absent and should stay out unless explicitly
-requested later: inventory/stock tracking, a general ledger, payroll/HR, a full GST engine (CGST/SGST/IGST
-splitting), multi-company or multi-currency support, and complex role-based access control. There is
-currently no login/authentication layer either.
+## 17. Troubleshooting
+
+- **"DATABASE_URL environment variable is not set"** — confirm `.env` exists at the repo root.
+- **401 immediately after logging in** — confirm `JWT_SECRET` is set; the token can't be verified without it.
+- **Connection errors to Supabase** — use the **pooled** connection string (port 6543), not the direct one.
+- **"Cannot determine GST type"** on order/invoice creation — the authenticated user hasn't completed
+  Company Settings yet (no `companies` row), or the counterpart customer/supplier has neither a state nor
+  a GST number set.
+- **Dates look one day off** — shouldn't happen; `backend/db.js` parses PostgreSQL `DATE` columns as plain
+  strings specifically to avoid timezone shifting.
+
+## 18. What's Deliberately Not Included
+
+Inventory/stock tracking, a general ledger, payroll/HR, a full GST engine (CGST/SGST/IGST splitting beyond
+the two-state comparison already implemented), multi-currency support, and complex role-based access
+control (each tenant currently has exactly one user/login — no team members or roles within a company).
+Supabase Auth was deliberately not introduced — authentication is handled entirely within this project's
+own Node/Express backend, per the existing architecture.

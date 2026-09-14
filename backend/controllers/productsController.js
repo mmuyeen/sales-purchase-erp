@@ -23,8 +23,8 @@ function mapRow(row) {
 
 export async function list(req, res) {
   const { search, active } = req.query;
-  const conditions = [];
-  const params = [];
+  const params = [req.user.id];
+  const conditions = ['user_id = $1'];
 
   if (search) {
     params.push(`%${search}%`);
@@ -35,16 +35,18 @@ export async function list(req, res) {
     conditions.push(`is_active = $${params.length}`);
   }
 
-  const where = conditions.length ? `where ${conditions.join(' and ')}` : '';
   const { rows } = await getPool().query(
-    `select * from products ${where} order by product_name asc`,
+    `select * from products where ${conditions.join(' and ')} order by product_name asc`,
     params
   );
   res.json({ success: true, data: rows.map(mapRow) });
 }
 
 export async function getById(req, res) {
-  const { rows } = await getPool().query('select * from products where id = $1', [req.params.id]);
+  const { rows } = await getPool().query(
+    'select * from products where id = $1 and user_id = $2',
+    [req.params.id, req.user.id]
+  );
   if (!rows.length) throw new ApiError(404, 'Product not found.');
   res.json({ success: true, data: mapRow(rows[0]) });
 }
@@ -53,11 +55,11 @@ export async function create(req, res) {
   const input = validateProductInput(req.body);
 
   const row = await withTransaction(async (client) => {
-    const productCode = await generateNumber(client, 'PROD');
+    const productCode = await generateNumber(client, req.user.id, 'PROD');
     const { rows } = await client.query(
-      `insert into products (product_code, product_name, description, hsn_code, uom, tax_percentage, payment_term, purchase_price, sales_price)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9) returning *`,
-      [productCode, input.name, input.description, input.hsnCode, input.uom, input.taxPercentage, input.paymentTerm, input.purchasePrice, input.salesPrice]
+      `insert into products (product_code, product_name, description, hsn_code, uom, tax_percentage, payment_term, purchase_price, sales_price, user_id)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *`,
+      [productCode, input.name, input.description, input.hsnCode, input.uom, input.taxPercentage, input.paymentTerm, input.purchasePrice, input.salesPrice, req.user.id]
     );
     return rows[0];
   });
@@ -71,8 +73,8 @@ export async function update(req, res) {
   const { rows } = await getPool().query(
     `update products set
        product_name=$1, description=$2, hsn_code=$3, uom=$4, tax_percentage=$5, payment_term=$6, purchase_price=$7, sales_price=$8
-     where id=$9 returning *`,
-    [input.name, input.description, input.hsnCode, input.uom, input.taxPercentage, input.paymentTerm, input.purchasePrice, input.salesPrice, req.params.id]
+     where id=$9 and user_id=$10 returning *`,
+    [input.name, input.description, input.hsnCode, input.uom, input.taxPercentage, input.paymentTerm, input.purchasePrice, input.salesPrice, req.params.id, req.user.id]
   );
   if (!rows.length) throw new ApiError(404, 'Product not found.');
   res.json({ success: true, data: mapRow(rows[0]) });
@@ -80,8 +82,8 @@ export async function update(req, res) {
 
 export async function deactivate(req, res) {
   const { rows } = await getPool().query(
-    'update products set is_active = false where id = $1 returning *',
-    [req.params.id]
+    'update products set is_active = false where id = $1 and user_id = $2 returning *',
+    [req.params.id, req.user.id]
   );
   if (!rows.length) throw new ApiError(404, 'Product not found.');
   res.json({ success: true, data: mapRow(rows[0]) });

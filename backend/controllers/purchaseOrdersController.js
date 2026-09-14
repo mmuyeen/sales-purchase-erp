@@ -4,7 +4,7 @@ import { validatePurchaseOrderInput } from '../validators/purchaseOrders.js';
 import { generateNumber } from '../services/numbering.js';
 import { computeDocumentTotals } from '../services/calculations.js';
 import { resolveStateCode, determineGstType } from '../../shared/gst.js';
-import { resolveCompanyStateCode } from './companyController.js';
+import { getCompanyForUser } from './companyController.js';
 import { PURCHASE_ORDER_STATUS_OPTIONS } from '../../shared/constants.js';
 
 function mapHeader(row) {
@@ -30,8 +30,6 @@ function mapHeader(row) {
     igstAmount,
     totalGst: Number(row.total_gst),
     roundOff: Number(row.round_off),
-    // null for records created before this feature (all three amounts are 0),
-    // so the frontend can fall back to the legacy single-tax display for them.
     gstType: igstAmount > 0 ? 'INTER' : (cgstAmount > 0 || sgstAmount > 0 ? 'INTRA' : null),
     taxAmount: Number(row.tax_amount),
     grandTotal: Number(row.grand_total),
@@ -71,8 +69,8 @@ const HEADER_SELECT = `
 
 export async function list(req, res) {
   const { supplierId, status, from, to, poNumber } = req.query;
-  const conditions = [];
-  const params = [];
+  const params = [req.user.id];
+  const conditions = ['po.user_id = $1'];
 
   if (supplierId) { params.push(supplierId); conditions.push(`po.supplier_id = $${params.length}`); }
   if (status) { params.push(status); conditions.push(`po.status = $${params.length}`); }
@@ -80,9 +78,8 @@ export async function list(req, res) {
   if (to) { params.push(to); conditions.push(`po.po_date <= $${params.length}`); }
   if (poNumber) { params.push(`%${poNumber}%`); conditions.push(`po.po_number ilike $${params.length}`); }
 
-  const where = conditions.length ? `where ${conditions.join(' and ')}` : '';
   const { rows } = await getPool().query(
-    `${HEADER_SELECT} ${where} order by po.po_date desc, po.id desc`,
+    `${HEADER_SELECT} where ${conditions.join(' and ')} order by po.po_date desc, po.id desc`,
     params
   );
   res.json({ success: true, data: rows.map(mapHeader) });
@@ -90,7 +87,7 @@ export async function list(req, res) {
 
 export async function getById(req, res) {
   const pool = getPool();
-  const { rows } = await pool.query(`${HEADER_SELECT} where po.id = $1`, [req.params.id]);
+  const { rows } = await pool.query(`${HEADER_SELECT} where po.id = $1 and po.user_id = $2`, [req.params.id, req.user.id]);
   if (!rows.length) throw new ApiError(404, 'Purchase order not found.');
 
   const { rows: items } = await pool.query(
@@ -117,17 +114,31 @@ async function insertItems(client, purchaseOrderId, computedItems) {
   }
 }
 
-// For a Purchase Order, the SUPPLIER is the GST seller and OUR COMPANY is the
-// buyer/recipient — the reverse of a Sales Invoice/Order.
-function resolveGstTypeForSupplier(supplier) {
+// Never trust a product id from the client — confirm every one referenced
+// by this order actually belongs to the authenticated tenant. Without this,
+// Vendor A could reference Vendor B's real product id and it would pass
+// (the DB foreign key only checks existence, not ownership).
+async function assertProductsOwnedByUser(client, items, userId) {
+  const productIds = [...new Set(items.map((item) => String(item.productId)))];
+  const { rows } = await client.query(
+    'select id from products where id = any($1::bigint[]) and user_id = $2',
+    [productIds, userId]
+  );
+  if (rows.length !== productIds.length) {
+    throw new ApiError(400, 'One or more products are invalid.');
+  }
+}
+
+// Purchase Order: the SUPPLIER is the GST seller, OUR COMPANY is the buyer —
+// the reverse of a Sales Invoice/Order. Seller/buyer state now comes from
+// the authenticated user's own company row, never from env vars or another
+// tenant's data.
+async function resolveGstTypeForSupplier(client, supplier, userId) {
+  const company = await getCompanyForUser(client, userId);
   const supplierStateCode = resolveStateCode({ gstNumber: supplier.gst_number, state: supplier.state });
-  const companyStateCode = resolveCompanyStateCode();
-  const gstType = determineGstType(supplierStateCode, companyStateCode);
+  const gstType = determineGstType(supplierStateCode, company.company_state_code);
   if (!gstType) {
-    throw new ApiError(
-      400,
-      'Cannot determine GST type. Please configure COMPANY_STATE_CODE (or COMPANY_GST_NUMBER / COMPANY_STATE) in the environment, and ensure the supplier has a valid state or GST number.'
-    );
+    throw new ApiError(400, 'Cannot determine GST type. The supplier has no usable state or GST information.');
   }
   return gstType;
 }
@@ -137,28 +148,30 @@ export async function create(req, res) {
 
   const header = await withTransaction(async (client) => {
     const { rows: supplierRows } = await client.query(
-      'select * from suppliers where id = $1 and is_active = true',
-      [input.supplierId]
+      'select * from suppliers where id = $1 and user_id = $2 and is_active = true',
+      [input.supplierId, req.user.id]
     );
     if (!supplierRows.length) throw new ApiError(400, 'Please select a valid active supplier.');
     const supplier = supplierRows[0];
 
-    const gstType = resolveGstTypeForSupplier(supplier);
+    await assertProductsOwnedByUser(client, input.items, req.user.id);
+
+    const gstType = await resolveGstTypeForSupplier(client, supplier, req.user.id);
     const { computedItems, subtotal, discountAmount, taxableAmount, cgstAmount, sgstAmount, igstAmount, totalGst, roundOff, grandTotal } =
       computeDocumentTotals(input.items, gstType);
 
-    const poNumber = await generateNumber(client, 'PO', { yearly: true });
+    const poNumber = await generateNumber(client, req.user.id, 'PO', { yearly: true });
 
     const { rows } = await client.query(
       `insert into purchase_orders
         (po_number, po_date, supplier_id, supplier_gst_number, supplier_state, payment_terms, expected_delivery_date, remarks,
          subtotal, discount_amount, taxable_amount, cgst_amount, sgst_amount, igst_amount, total_gst, round_off, tax_amount,
-         grand_total, balance_amount)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$15,$17,$17)
+         grand_total, balance_amount, user_id)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$15,$17,$17,$18)
        returning *`,
       [poNumber, input.poDate, input.supplierId, supplier.gst_number, supplier.state, input.paymentTerms,
         input.expectedDeliveryDate, input.remarks, subtotal, discountAmount, taxableAmount,
-        cgstAmount, sgstAmount, igstAmount, totalGst, roundOff, grandTotal]
+        cgstAmount, sgstAmount, igstAmount, totalGst, roundOff, grandTotal, req.user.id]
     );
     const po = rows[0];
 
@@ -175,8 +188,8 @@ export async function update(req, res) {
 
   const header = await withTransaction(async (client) => {
     const { rows: existingRows } = await client.query(
-      'select * from purchase_orders where id = $1 for update',
-      [req.params.id]
+      'select * from purchase_orders where id = $1 and user_id = $2 for update',
+      [req.params.id, req.user.id]
     );
     if (!existingRows.length) throw new ApiError(404, 'Purchase order not found.');
     const existing = existingRows[0];
@@ -185,13 +198,15 @@ export async function update(req, res) {
     }
 
     const { rows: supplierRows } = await client.query(
-      'select * from suppliers where id = $1 and is_active = true',
-      [input.supplierId]
+      'select * from suppliers where id = $1 and user_id = $2 and is_active = true',
+      [input.supplierId, req.user.id]
     );
     if (!supplierRows.length) throw new ApiError(400, 'Please select a valid active supplier.');
     const supplier = supplierRows[0];
 
-    const gstType = resolveGstTypeForSupplier(supplier);
+    await assertProductsOwnedByUser(client, input.items, req.user.id);
+
+    const gstType = await resolveGstTypeForSupplier(client, supplier, req.user.id);
     const { computedItems, subtotal, discountAmount, taxableAmount, cgstAmount, sgstAmount, igstAmount, totalGst, roundOff, grandTotal } =
       computeDocumentTotals(input.items, gstType);
 
@@ -206,10 +221,10 @@ export async function update(req, res) {
          expected_delivery_date=$6, remarks=$7, subtotal=$8, discount_amount=$9, taxable_amount=$10,
          cgst_amount=$11, sgst_amount=$12, igst_amount=$13, total_gst=$14, round_off=$15, tax_amount=$14,
          grand_total=$16, balance_amount=$17
-       where id=$18 returning *`,
+       where id=$18 and user_id=$19 returning *`,
       [input.poDate, input.supplierId, supplier.gst_number, supplier.state, input.paymentTerms,
         input.expectedDeliveryDate, input.remarks, subtotal, discountAmount, taxableAmount,
-        cgstAmount, sgstAmount, igstAmount, totalGst, roundOff, grandTotal, balanceAmount, req.params.id]
+        cgstAmount, sgstAmount, igstAmount, totalGst, roundOff, grandTotal, balanceAmount, req.params.id, req.user.id]
     );
 
     await client.query('delete from purchase_order_items where purchase_order_id = $1', [req.params.id]);
@@ -229,8 +244,8 @@ export async function updateStatus(req, res) {
 
   const header = await withTransaction(async (client) => {
     const { rows: existingRows } = await client.query(
-      'select * from purchase_orders where id = $1 for update',
-      [req.params.id]
+      'select * from purchase_orders where id = $1 and user_id = $2 for update',
+      [req.params.id, req.user.id]
     );
     if (!existingRows.length) throw new ApiError(404, 'Purchase order not found.');
     const existing = existingRows[0];
@@ -243,8 +258,8 @@ export async function updateStatus(req, res) {
     }
 
     const { rows } = await client.query(
-      'update purchase_orders set status = $1 where id = $2 returning *',
-      [status, req.params.id]
+      'update purchase_orders set status = $1 where id = $2 and user_id = $3 returning *',
+      [status, req.params.id, req.user.id]
     );
     const { rows: supplierRows } = await client.query(
       'select supplier_name from suppliers where id = $1',
@@ -259,7 +274,10 @@ export async function updateStatus(req, res) {
 
 export async function remove(req, res) {
   await withTransaction(async (client) => {
-    const { rows } = await client.query('select * from purchase_orders where id = $1 for update', [req.params.id]);
+    const { rows } = await client.query(
+      'select * from purchase_orders where id = $1 and user_id = $2 for update',
+      [req.params.id, req.user.id]
+    );
     if (!rows.length) throw new ApiError(404, 'Purchase order not found.');
     const po = rows[0];
     if (po.status !== 'Draft' || Number(po.paid_amount) > 0) {

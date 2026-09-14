@@ -1,4 +1,5 @@
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext.jsx';
 
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', end: true },
@@ -13,9 +14,18 @@ const NAV_ITEMS = [
   { to: '/reports/sales', label: 'Sales Report' },
   { to: '/reports/purchase-orders', label: 'Purchase Report' },
   { to: '/reports/product-sales-payments', label: 'Product Sales & Payment Report' },
+  { to: '/settings/company', label: 'Company Settings' },
 ];
 
 export default function MainLayout() {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+
+  async function handleLogout() {
+    await logout();
+    navigate('/login', { replace: true });
+  }
+
   return (
     <div className="app-layout">
       <aside className="sidebar">
@@ -26,10 +36,14 @@ export default function MainLayout() {
               {item.label}
             </NavLink>
           ))}
+          <button type="button" className="sidebar-logout" onClick={handleLogout}>Logout</button>
         </nav>
       </aside>
       <div className="main-column">
-        <header className="header">Sales &amp; Purchase Management</header>
+        <header className="header">
+          <span>Sales &amp; Purchase Management</span>
+          {user?.email && <span className="header-user">{user.email}</span>}
+        </header>
         <main className="content">
           <Outlet />
         </main>

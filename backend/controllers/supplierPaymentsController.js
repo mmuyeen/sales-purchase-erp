@@ -23,19 +23,18 @@ function mapRow(row) {
 
 export async function list(req, res) {
   const { supplierId, poId } = req.query;
-  const conditions = [];
-  const params = [];
+  const params = [req.user.id];
+  const conditions = ['sp.user_id = $1'];
 
   if (supplierId) { params.push(supplierId); conditions.push(`sp.supplier_id = $${params.length}`); }
   if (poId) { params.push(poId); conditions.push(`sp.purchase_order_id = $${params.length}`); }
 
-  const where = conditions.length ? `where ${conditions.join(' and ')}` : '';
   const { rows } = await getPool().query(
     `select sp.*, s.supplier_name, po.po_number
      from supplier_payments sp
      join suppliers s on s.id = sp.supplier_id
      join purchase_orders po on po.id = sp.purchase_order_id
-     ${where} order by sp.payment_date desc, sp.id desc`,
+     where ${conditions.join(' and ')} order by sp.payment_date desc, sp.id desc`,
     params
   );
   res.json({ success: true, data: rows.map(mapRow) });
@@ -56,9 +55,15 @@ export async function create(req, res) {
   }
 
   const result = await withTransaction(async (client) => {
+    const { rows: supplierRows } = await client.query(
+      'select id from suppliers where id = $1 and user_id = $2',
+      [supplierId, req.user.id]
+    );
+    if (!supplierRows.length) throw new ApiError(400, 'Please select a valid supplier.');
+
     const { rows: poRows } = await client.query(
-      'select * from purchase_orders where id = $1 for update',
-      [purchaseOrderId]
+      'select * from purchase_orders where id = $1 and user_id = $2 for update',
+      [purchaseOrderId, req.user.id]
     );
     if (!poRows.length) throw new ApiError(404, 'Purchase order not found.');
     const po = poRows[0];
@@ -73,12 +78,12 @@ export async function create(req, res) {
       throw new ApiError(400, 'Payment amount exceeds outstanding balance.');
     }
 
-    const paymentNumber = await generateNumber(client, 'SP', { yearly: true });
+    const paymentNumber = await generateNumber(client, req.user.id, 'SP', { yearly: true });
     const { rows: paymentRows } = await client.query(
       `insert into supplier_payments
-        (payment_number, payment_date, supplier_id, purchase_order_id, amount, payment_mode, reference_number, remarks)
-       values ($1,$2,$3,$4,$5,$6,$7,$8) returning *`,
-      [paymentNumber, paymentDate, supplierId, purchaseOrderId, amountNum, paymentMode, referenceNumber || null, remarks || null]
+        (payment_number, payment_date, supplier_id, purchase_order_id, amount, payment_mode, reference_number, remarks, user_id)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9) returning *`,
+      [paymentNumber, paymentDate, supplierId, purchaseOrderId, amountNum, paymentMode, referenceNumber || null, remarks || null, req.user.id]
     );
 
     const newPaid = round2(Number(po.paid_amount) + amountNum);
