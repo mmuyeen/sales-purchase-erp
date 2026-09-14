@@ -1,7 +1,9 @@
 import { ApiError } from './ApiError.js';
 
-// Basic in-memory rate limit for auth endpoints (login/register), keyed by
-// IP. No rate-limiting existed in this project before.
+// Basic in-memory rate limit for auth endpoints, keyed by IP + route (each
+// endpoint gets its own independent budget — hammering forgot-password
+// can't eat into the budget login/reset-password need, and a legitimate
+// forgot-password → reset-password → login flow always has room).
 //
 // LIMITATION: this is per-process memory, not shared across serverless
 // instances/regions. On Vercel, each cold-started function instance has its
@@ -17,7 +19,7 @@ function getClientIp(req) {
 }
 
 export function authRateLimit(req, res, next) {
-  const key = getClientIp(req);
+  const key = `${getClientIp(req)}:${req.baseUrl}${req.path}`;
   const now = Date.now();
   const entry = attempts.get(key);
 

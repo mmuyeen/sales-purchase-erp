@@ -10,5 +10,7 @@ router.post('/register', authRateLimit, asyncHandler(controller.register));
 router.post('/login', authRateLimit, asyncHandler(controller.login));
 router.post('/logout', asyncHandler(controller.logout));
 router.get('/me', requireAuth, asyncHandler(controller.me));
+router.post('/forgot-password', authRateLimit, asyncHandler(controller.forgotPassword));
+router.post('/reset-password', authRateLimit, asyncHandler(controller.resetPassword));
 
 export default router;

@@ -65,6 +65,33 @@ export function validateRegisterInput(body) {
   };
 }
 
+export function validateForgotPasswordInput(body) {
+  const email = normalizeEmail(body.email);
+  if (!email || !EMAIL_REGEX.test(email)) {
+    throw new ApiError(400, 'Please enter a valid email address.');
+  }
+  return { email };
+}
+
+// Same minimum-length policy as registration, per the requirement to reuse
+// the existing password policy rather than invent a second one.
+export function validateResetPasswordInput(body) {
+  const email = normalizeEmail(body.email);
+  if (!email || !EMAIL_REGEX.test(email)) {
+    throw new ApiError(400, 'Please enter a valid email address.');
+  }
+
+  const newPassword = body.newPassword;
+  if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
+    throw new ApiError(400, 'Password must be at least 8 characters.');
+  }
+  if (body.confirmPassword !== newPassword) {
+    throw new ApiError(400, 'Passwords do not match.');
+  }
+
+  return { email, newPassword };
+}
+
 export function validateCompanyUpdateInput(body) {
   const companyName = String(body.companyName || '').trim();
   if (!companyName) throw new ApiError(400, 'Company name is required.');

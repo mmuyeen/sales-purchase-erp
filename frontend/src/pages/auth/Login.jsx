@@ -51,6 +51,9 @@ export default function Login() {
               {showPassword ? 'Hide' : 'Show'}
             </button>
           </div>
+          <div style={{ textAlign: 'right', marginTop: 4 }}>
+            <Link to="/forgot-password" style={{ fontSize: '0.82rem' }}>Forgot Password?</Link>
+          </div>
         </div>
 
         <button className="btn btn-primary" type="submit" disabled={saving} style={{ width: '100%', marginTop: 8 }}>

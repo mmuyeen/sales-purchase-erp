@@ -2,9 +2,10 @@ import bcrypt from 'bcryptjs';
 import { getPool, withTransaction } from '../db.js';
 import { ApiError } from '../middleware/ApiError.js';
 import { signAuthToken, setAuthCookie, clearAuthCookie } from '../middleware/auth.js';
-import { validateLoginInput, validateRegisterInput } from '../validators/auth.js';
+import { validateLoginInput, validateRegisterInput, validateForgotPasswordInput, validateResetPasswordInput } from '../validators/auth.js';
 
 const BCRYPT_ROUNDS = 10;
+
 // Used to keep login response time similar whether or not the email exists,
 // so an attacker can't distinguish "no such user" from "wrong password"
 // by timing. Never a valid hash for a real account.
@@ -72,4 +73,47 @@ export async function me(req, res) {
   const { rows } = await getPool().query('select id, email from users where id = $1', [req.user.id]);
   if (!rows.length) throw new ApiError(401, 'Not authenticated.');
   res.json({ success: true, data: mapUser(rows[0]) });
+}
+
+// Simple, explicitly-requested flow: the account is identified by its
+// registered email address alone (no reset token/link/OTP/email delivery).
+// The response intentionally reveals whether the email is registered — the
+// caller specified this exact behavior and has acknowledged it trades away
+// account-enumeration protection in favor of a token-free flow.
+export async function forgotPassword(req, res) {
+  const { email } = validateForgotPasswordInput(req.body);
+
+  const { rows } = await getPool().query(
+    'select id from users where email = $1 and is_active = true',
+    [email]
+  );
+  if (!rows.length) {
+    throw new ApiError(404, 'Email address not found.');
+  }
+
+  res.json({ success: true, message: 'Email verified.' });
+}
+
+export async function resetPassword(req, res) {
+  const { email, newPassword } = validateResetPasswordInput(req.body);
+
+  const { rows } = await getPool().query(
+    'select id from users where email = $1 and is_active = true',
+    [email]
+  );
+  const user = rows[0];
+  if (!user) {
+    throw new ApiError(404, 'Email address not found.');
+  }
+
+  const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+
+  // password_changed_at is stamped so any existing sessions issued before
+  // this reset are invalidated by requireAuth (see middleware/auth.js).
+  await getPool().query(
+    'update users set password_hash = $1, password_changed_at = now(), updated_at = now() where id = $2',
+    [passwordHash, user.id]
+  );
+
+  res.json({ success: true, message: 'Password reset successfully.' });
 }

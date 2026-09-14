@@ -4,6 +4,8 @@ import { ProtectedRoute, PublicOnlyRoute } from './components/RouteGuards.jsx';
 
 import Login from './pages/auth/Login.jsx';
 import Register from './pages/auth/Register.jsx';
+import ForgotPassword from './pages/auth/ForgotPassword.jsx';
+import ResetPassword from './pages/auth/ResetPassword.jsx';
 import CompanySettings from './pages/settings/CompanySettings.jsx';
 
 import Dashboard from './pages/Dashboard.jsx';
@@ -45,6 +47,11 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<PublicOnlyRoute><Login /></PublicOnlyRoute>} />
       <Route path="/register" element={<PublicOnlyRoute><Register /></PublicOnlyRoute>} />
+      {/* Intentionally not gated by PublicOnlyRoute/ProtectedRoute: a user
+          may still be logged in elsewhere (e.g. another tab/device) while
+          resetting a forgotten password, and the flow should still work. */}
+      <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
 
       <Route path="/invoices/:id/print" element={<ProtectedRoute><InvoicePrint /></ProtectedRoute>} />
 
